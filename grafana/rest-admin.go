@@ -22,7 +22,28 @@ func (r *Client) CreateUser(ctx context.Context, user User) (StatusMessage, erro
 		return StatusMessage{}, err
 	}
 	if err = json.Unmarshal(raw, &resp); err != nil {
+		return StatusMessage{}, fmt.Errorf("raw response: %s; umarshal error: %s", string(raw), err.Error())
+	}
+	return resp, nil
+}
+
+// UpdateUserPassword update password for a user.
+// Requires basic authentication and that the authenticated user is a Grafana Admin.
+// Reflects PUT api/admin/users/%d/password API call.
+func (r *Client) UpdateUserPassword(ctx context.Context, user User) (StatusMessage, error) {
+	var (
+		raw  []byte
+		resp StatusMessage
+		err  error
+	)
+	if raw, err = json.Marshal(UserPassword{Password: user.Password}); err != nil {
 		return StatusMessage{}, err
+	}
+	if raw, _, err = r.put(ctx, fmt.Sprintf("api/admin/users/%d/password", user.ID), nil, raw); err != nil {
+		return StatusMessage{}, err
+	}
+	if err = json.Unmarshal(raw, &resp); err != nil {
+		return StatusMessage{}, fmt.Errorf("raw response: %s; umarshal error: %s", string(raw), err.Error())
 	}
 	return resp, nil
 }

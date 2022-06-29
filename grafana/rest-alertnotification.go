@@ -24,14 +24,14 @@ import (
 
 // GetAllAlertNotifications gets all alert notification channels.
 // Reflects GET /api/alert-notifications API call.
-func (c *Client) GetAllAlertNotifications(ctx context.Context) ([]AlertNotification, error) {
+func (r *Client) GetAllAlertNotifications(ctx context.Context) ([]AlertNotification, error) {
 	var (
 		raw  []byte
 		an   []AlertNotification
 		code int
 		err  error
 	)
-	if raw, code, err = c.get(ctx, "api/alert-notifications", nil); err != nil {
+	if raw, code, err = r.get(ctx, "api/alert-notifications", nil); err != nil {
 		return nil, err
 	}
 	if code != 200 {
@@ -43,14 +43,14 @@ func (c *Client) GetAllAlertNotifications(ctx context.Context) ([]AlertNotificat
 
 // GetAlertNotificationUID gets the alert notification channel which has the specified uid.
 // Reflects GET /api/alert-notifications/uid/:uid API call.
-func (c *Client) GetAlertNotificationUID(ctx context.Context, uid string) (AlertNotification, error) {
+func (r *Client) GetAlertNotificationUID(ctx context.Context, uid string) (AlertNotification, error) {
 	var (
 		raw  []byte
 		an   AlertNotification
 		code int
 		err  error
 	)
-	if raw, code, err = c.get(ctx, fmt.Sprintf("api/alert-notifications/uid/%s", uid), nil); err != nil {
+	if raw, code, err = r.get(ctx, fmt.Sprintf("api/alert-notifications/uid/%s", uid), nil); err != nil {
 		return an, err
 	}
 	if code != 200 {
@@ -62,14 +62,14 @@ func (c *Client) GetAlertNotificationUID(ctx context.Context, uid string) (Alert
 
 // GetAlertNotificationID gets the alert notification channel which has the specified id.
 // Reflects GET /api/alert-notifications/:id API call.
-func (c *Client) GetAlertNotificationID(ctx context.Context, id uint) (AlertNotification, error) {
+func (r *Client) GetAlertNotificationID(ctx context.Context, id uint) (AlertNotification, error) {
 	var (
 		raw  []byte
 		an   AlertNotification
 		code int
 		err  error
 	)
-	if raw, code, err = c.get(ctx, fmt.Sprintf("api/alert-notifications/%d", id), nil); err != nil {
+	if raw, code, err = r.get(ctx, fmt.Sprintf("api/alert-notifications/%d", id), nil); err != nil {
 		return an, err
 	}
 	if code != 200 {
@@ -81,7 +81,7 @@ func (c *Client) GetAlertNotificationID(ctx context.Context, id uint) (AlertNoti
 
 // CreateAlertNotification creates a new alert notification channel.
 // Reflects POST /api/alert-notifications API call.
-func (c *Client) CreateAlertNotification(ctx context.Context, an AlertNotification) (int64, error) {
+func (r *Client) CreateAlertNotification(ctx context.Context, an AlertNotification) (int64, error) {
 	var (
 		raw  []byte
 		code int
@@ -90,7 +90,7 @@ func (c *Client) CreateAlertNotification(ctx context.Context, an AlertNotificati
 	if raw, err = json.Marshal(an); err != nil {
 		return -1, err
 	}
-	if raw, code, err = c.post(ctx, "api/alert-notifications", nil, raw); err != nil {
+	if raw, code, err = r.post(ctx, "api/alert-notifications", nil, raw); err != nil {
 		return -1, err
 	}
 	if code != 200 {
@@ -105,7 +105,7 @@ func (c *Client) CreateAlertNotification(ctx context.Context, an AlertNotificati
 
 // UpdateAlertNotificationUID updates the specified alert notification channel.
 // Reflects PUT /api/alert-notifications/uid/:uid API call.
-func (c *Client) UpdateAlertNotificationUID(ctx context.Context, an AlertNotification, uid string) error {
+func (r *Client) UpdateAlertNotificationUID(ctx context.Context, an AlertNotification, uid string) error {
 	var (
 		raw  []byte
 		code int
@@ -114,7 +114,7 @@ func (c *Client) UpdateAlertNotificationUID(ctx context.Context, an AlertNotific
 	if raw, err = json.Marshal(an); err != nil {
 		return err
 	}
-	if raw, code, err = c.put(ctx, fmt.Sprintf("api/alert-notifications/uid/%s", uid), nil, raw); err != nil {
+	if raw, code, err = r.put(ctx, fmt.Sprintf("api/alert-notifications/uid/%s", uid), nil, raw); err != nil {
 		return err
 	}
 	if code != 200 {
@@ -125,7 +125,7 @@ func (c *Client) UpdateAlertNotificationUID(ctx context.Context, an AlertNotific
 
 // UpdateAlertNotificationID updates the specified alert notification channel.
 // Reflects PUT /api/alert-notifications/:id API call.
-func (c *Client) UpdateAlertNotificationID(ctx context.Context, an AlertNotification, id uint) error {
+func (r *Client) UpdateAlertNotificationID(ctx context.Context, an AlertNotification, id uint) error {
 	var (
 		raw  []byte
 		code int
@@ -134,7 +134,7 @@ func (c *Client) UpdateAlertNotificationID(ctx context.Context, an AlertNotifica
 	if raw, err = json.Marshal(an); err != nil {
 		return err
 	}
-	if raw, code, err = c.put(ctx, fmt.Sprintf("api/alert-notifications/%d", id), nil, raw); err != nil {
+	if raw, code, err = r.put(ctx, fmt.Sprintf("api/alert-notifications/%d", id), nil, raw); err != nil {
 		return err
 	}
 	if code != 200 {
@@ -145,13 +145,13 @@ func (c *Client) UpdateAlertNotificationID(ctx context.Context, an AlertNotifica
 
 // DeleteAlertNotificationUID deletes the specified alert notification channel.
 // Reflects DELETE /api/alert-notifications/uid/:uid API call.
-func (c *Client) DeleteAlertNotificationUID(ctx context.Context, uid string) error {
+func (r *Client) DeleteAlertNotificationUID(ctx context.Context, uid string) error {
 	var (
 		raw  []byte
 		code int
 		err  error
 	)
-	if raw, code, err = c.delete(ctx, fmt.Sprintf("api/alert-notifications/uid/%s", uid)); err != nil {
+	if raw, code, err = r.delete(ctx, fmt.Sprintf("api/alert-notifications/uid/%s", uid)); err != nil {
 		return err
 	}
 	if code != 200 {
@@ -162,13 +162,13 @@ func (c *Client) DeleteAlertNotificationUID(ctx context.Context, uid string) err
 
 // DeleteAlertNotificationID deletes the specified alert notification channel.
 // Reflects DELETE /api/alert-notifications/:id API call.
-func (c *Client) DeleteAlertNotificationID(ctx context.Context, id uint) error {
+func (r *Client) DeleteAlertNotificationID(ctx context.Context, id uint) error {
 	var (
 		raw  []byte
 		code int
 		err  error
 	)
-	if raw, code, err = c.delete(ctx, fmt.Sprintf("api/alert-notifications/%d", id)); err != nil {
+	if raw, code, err = r.delete(ctx, fmt.Sprintf("api/alert-notifications/%d", id)); err != nil {
 		return err
 	}
 	if code != 200 {

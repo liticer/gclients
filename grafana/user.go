@@ -39,6 +39,10 @@ type UserPermissions struct {
 	IsGrafanaAdmin bool `json:"isGrafanaAdmin"`
 }
 
+type UserPassword struct {
+	Password string `json:"password"`
+}
+
 type PageUsers struct {
 	TotalCount int    `json:"totalCount"`
 	Users      []User `json:"users"`
