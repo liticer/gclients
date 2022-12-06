@@ -74,6 +74,8 @@ type Range struct {
 
 // API provides bindings for Prometheus's v1 API.
 type API interface {
+	// Health will check prometheus health.
+	Health(ctx context.Context) (int, error)
 	// Query performs a query for the given time.
 	Query(ctx context.Context, query string, ts time.Time) (model.Value, error)
 	// QueryRange performs a query for the given range.
@@ -133,6 +135,27 @@ func NewAPI(c prometheus.Client) API {
 
 type httpAPI struct {
 	client prometheus.Client
+}
+
+func (h *httpAPI) Health(ctx context.Context) (int, error) {
+	u := h.client.URL(epQuery, nil)
+	q := u.Query()
+
+	q.Set("query", "ALERTS{}")
+	q.Set("time", time.Now().Format(time.RFC3339Nano))
+
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return 0, err
+	}
+
+	res, _, err := h.client.Do(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+	return res.StatusCode, nil
 }
 
 func (h *httpAPI) Query(ctx context.Context, query string, ts time.Time) (model.Value, error) {
