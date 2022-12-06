@@ -54,6 +54,9 @@ type Config struct {
 	// The password of basic auth for the Prometheus to connect to.
 	Password string
 
+	// The timeout for the Prometheus to connect to.
+	Timeout int
+
 	// RoundTripper is used by the Client to drive HTTP requests. If not
 	// provided, DefaultRoundTripper will be used.
 	RoundTripper http.RoundTripper
