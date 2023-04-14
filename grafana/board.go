@@ -84,7 +84,7 @@ type (
 		Type        string      `json:"type"`
 		Auto        bool        `json:"auto,omitempty"`
 		AutoCount   *int        `json:"auto_count,omitempty"`
-		Datasource  *string     `json:"datasource"`
+		Datasource  interface{} `json:"datasource"`
 		Refresh     BoolInt     `json:"refresh"`
 		Options     []Option    `json:"options"`
 		IncludeAll  bool        `json:"includeAll"`
@@ -112,18 +112,18 @@ type (
 		Value interface{} `json:"value"` // TODO select more precise type
 	}
 	Annotation struct {
-		Name       string   `json:"name"`
-		Datasource *string  `json:"datasource"`
-		ShowLine   bool     `json:"showLine"`
-		IconColor  string   `json:"iconColor"`
-		LineColor  string   `json:"lineColor"`
-		IconSize   uint     `json:"iconSize"`
-		Enable     bool     `json:"enable"`
-		Query      string   `json:"query"`
-		TextField  string   `json:"textField"`
-		TagsField  string   `json:"tagsField"`
-		Tags       []string `json:"tags"`
-		Type       string   `json:"type"`
+		Name       string      `json:"name"`
+		ShowLine   bool        `json:"showLine"`
+		Datasource interface{} `json:"datasource"`
+		IconColor  string      `json:"iconColor"`
+		LineColor  string      `json:"lineColor"`
+		IconSize   uint        `json:"iconSize"`
+		Enable     bool        `json:"enable"`
+		Query      string      `json:"query"`
+		TextField  string      `json:"textField"`
+		TagsField  string      `json:"tagsField"`
+		Tags       []string    `json:"tags"`
+		Type       string      `json:"type"`
 	}
 )
 
