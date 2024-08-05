@@ -29,24 +29,20 @@ import (
 )
 
 const (
-	apiPrefix = "/api/v1"
+	apiPrefix = "/api/v2"
 
 	epStatus   = apiPrefix + "/status"
 	epSilence  = apiPrefix + "/silence/:id"
 	epSilences = apiPrefix + "/silences"
 	epAlerts   = apiPrefix + "/alerts"
-
-	statusSuccess = "success"
-	statusError   = "error"
 )
 
 // ServerStatus represents the status of the AlertManager endpoint.
 type ServerStatus struct {
-	ConfigYAML    string            `json:"configYAML"`
-	ConfigJSON    *config.Config    `json:"configJSON"`
+	Config        *config.Config    `json:"config"`
 	VersionInfo   map[string]string `json:"versionInfo"`
 	Uptime        time.Time         `json:"uptime"`
-	ClusterStatus *ClusterStatus    `json:"clusterStatus"`
+	ClusterStatus *ClusterStatus    `json:"cluster"`
 }
 
 // PeerStatus represents the status of a peer in the cluster.
@@ -68,13 +64,6 @@ type apiClient struct {
 	api.Client
 }
 
-type apiResponse struct {
-	Status    string          `json:"status"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	ErrorType string          `json:"errorType,omitempty"`
-	Error     string          `json:"error,omitempty"`
-}
-
 type clientError struct {
 	code int
 	msg  string
@@ -85,38 +74,19 @@ func (e *clientError) Error() string {
 }
 
 func (c apiClient) Do(ctx context.Context, req *http.Request) (*http.Response, []byte, error) {
+	req.Header.Set("Content-Type", "application/json")
 	resp, body, err := c.Client.Do(ctx, req)
 	if err != nil {
 		return resp, body, err
 	}
 
-	code := resp.StatusCode
-
-	var result apiResponse
-	if err = json.Unmarshal(body, &result); err != nil {
-		// Pass the returned body rather than the JSON error because some API
-		// endpoints return plain text instead of JSON payload.
-		return resp, body, &clientError{
-			code: code,
-			msg:  string(body),
-		}
-	}
-
-	if (code/100 == 2) && (result.Status != statusSuccess) {
-		return resp, body, &clientError{
-			code: code,
-			msg:  "inconsistent body for response code",
-		}
-	}
-
-	if result.Status == statusError {
+	if resp.StatusCode != http.StatusOK {
 		err = &clientError{
-			code: code,
-			msg:  result.Error,
+			code: resp.StatusCode,
 		}
 	}
 
-	return resp, []byte(result.Data), err
+	return resp, body, err
 }
 
 // StatusAPI provides bindings for the Alertmanager's status API.
@@ -174,7 +144,7 @@ func (h *httpStatusAPI) Get(ctx context.Context) (*ServerStatus, error) {
 // AlertAPI provides bindings for the Alertmanager's alert API.
 type AlertAPI interface {
 	// List returns all the active alerts.
-	List(ctx context.Context, filter, receiver string, silenced, inhibited, active, unprocessed bool) ([]*ExtendedAlert, error)
+	List(ctx context.Context, filter []string, receiver string, silenced, inhibited, active, unprocessed bool) ([]*ExtendedAlert, error)
 	// Push sends a list of alerts to the Alertmanager.
 	Push(ctx context.Context, alerts ...Alert) error
 }
@@ -185,6 +155,7 @@ type Alert struct {
 	Annotations  LabelSet  `json:"annotations"`
 	StartsAt     time.Time `json:"startsAt,omitempty"`
 	EndsAt       time.Time `json:"endsAt,omitempty"`
+	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
 	GeneratorURL string    `json:"generatorURL"`
 }
 
@@ -192,8 +163,13 @@ type Alert struct {
 type ExtendedAlert struct {
 	Alert
 	Status      types.AlertStatus `json:"status"`
-	Receivers   []string          `json:"receivers"`
+	Receivers   []Receiver        `json:"receivers"`
 	Fingerprint string            `json:"fingerprint"`
+}
+
+// Receiver represents a receiver.
+type Receiver struct {
+	Name string `json:"name"`
 }
 
 // LabelSet represents a collection of label names and values as a map.
@@ -214,11 +190,11 @@ type httpAlertAPI struct {
 	client api.Client
 }
 
-func (h *httpAlertAPI) List(ctx context.Context, filter, receiver string, silenced, inhibited, active, unprocessed bool) ([]*ExtendedAlert, error) {
+func (h *httpAlertAPI) List(ctx context.Context, filter []string, receiver string, silenced, inhibited, active, unprocessed bool) ([]*ExtendedAlert, error) {
 	u := h.client.URL(epAlerts, nil)
 	params := url.Values{}
-	if filter != "" {
-		params.Add("filter", filter)
+	for _, f := range filter {
+		params.Add("filter", f)
 	}
 	params.Add("silenced", fmt.Sprintf("%t", silenced))
 	params.Add("inhibited", fmt.Sprintf("%t", inhibited))
@@ -269,7 +245,7 @@ type SilenceAPI interface {
 	// Expire expires the silence with the given ID.
 	Expire(ctx context.Context, id string) error
 	// List returns silences matching the given filter.
-	List(ctx context.Context, filter string) ([]*types.Silence, error)
+	List(ctx context.Context, filter []string) ([]*types.Silence, error)
 }
 
 // NewSilenceAPI returns a new SilenceAPI for the client.
@@ -342,11 +318,11 @@ func (h *httpSilenceAPI) Set(ctx context.Context, sil types.Silence) (string, er
 	return res.SilenceID, err
 }
 
-func (h *httpSilenceAPI) List(ctx context.Context, filter string) ([]*types.Silence, error) {
+func (h *httpSilenceAPI) List(ctx context.Context, filter []string) ([]*types.Silence, error) {
 	u := h.client.URL(epSilences, nil)
 	params := url.Values{}
-	if filter != "" {
-		params.Add("filter", filter)
+	for _, f := range filter {
+		params.Add("filter", f)
 	}
 	u.RawQuery = params.Encode()
 
