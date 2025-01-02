@@ -28,6 +28,7 @@ import (
 
 	"github.com/liticer/gclients/prometheus"
 
+	"github.com/levigross/grequests"
 	"github.com/prometheus/common/model"
 )
 
@@ -38,6 +39,7 @@ const (
 
 	epQuery       = apiPrefix + "/query"
 	epQueryRange  = apiPrefix + "/query_range"
+	epLabels      = apiPrefix + "/labels"
 	epLabelValues = apiPrefix + "/label/:name/values"
 	epSeries      = apiPrefix + "/series"
 )
@@ -80,8 +82,14 @@ type API interface {
 	Query(ctx context.Context, query string, ts time.Time) (model.Value, error)
 	// QueryRange performs a query for the given range.
 	QueryRange(ctx context.Context, query string, r Range) (model.Value, error)
+	// Labels getting label names.
+	Labels(ctx context.Context, start, end time.Time, match string) (model.LabelValues, error)
 	// LabelValues performs a query for the values of the given label.
-	LabelValues(ctx context.Context, label string) (model.LabelValues, error)
+	LabelValues(ctx context.Context, start, end time.Time, label string) (model.LabelValues, error)
+	// Series finding series by label matchers.
+	Series(ctx context.Context, start, end time.Time, match string) ([]model.Metric, error)
+	// Proxy request to prometheus endpoint
+	Proxy(method string, url string, params map[string]string, data map[string]string) (*grequests.Response, error)
 }
 
 // queryResult contains result data for a query.
@@ -140,13 +148,11 @@ type httpAPI struct {
 func (h *httpAPI) Health(ctx context.Context) (int, error) {
 	u := h.client.URL(epQuery, nil)
 	q := u.Query()
-
 	q.Set("query", "ALERTS{}")
 	q.Set("time", time.Now().Format(time.RFC3339Nano))
-
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return 0, err
 	}
@@ -162,10 +168,8 @@ func (h *httpAPI) Health(ctx context.Context) (int, error) {
 func (h *httpAPI) Query(ctx context.Context, query string, ts time.Time) (model.Value, error) {
 	u := h.client.URL(epQuery, nil)
 	q := u.Query()
-
 	q.Set("query", query)
 	q.Set("time", ts.Format(time.RFC3339Nano))
-
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequest("GET", u.String(), nil)
@@ -181,27 +185,23 @@ func (h *httpAPI) Query(ctx context.Context, query string, ts time.Time) (model.
 	var qres queryResult
 	err = json.Unmarshal(body, &qres)
 
-	return model.Value(qres.v), err
+	return qres.v, err
 }
 
 func (h *httpAPI) QueryRange(ctx context.Context, query string, r Range) (model.Value, error) {
 	u := h.client.URL(epQueryRange, nil)
 	q := u.Query()
-
-	var (
-		start = r.Start.Format(time.RFC3339Nano)
-		end   = r.End.Format(time.RFC3339Nano)
-		step  = strconv.FormatFloat(r.Step.Seconds(), 'f', 3, 64)
-	)
-
+	if !r.Start.IsZero() {
+		q.Set("start", r.Start.Format(time.RFC3339Nano))
+	}
+	if !r.End.IsZero() {
+		q.Set("end", r.End.Format(time.RFC3339Nano))
+	}
 	q.Set("query", query)
-	q.Set("start", start)
-	q.Set("end", end)
-	q.Set("step", step)
-
+	q.Set("step", strconv.FormatFloat(r.Step.Seconds(), 'f', 3, 64))
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -214,11 +214,23 @@ func (h *httpAPI) QueryRange(ctx context.Context, query string, r Range) (model.
 	var qres queryResult
 	err = json.Unmarshal(body, &qres)
 
-	return model.Value(qres.v), err
+	return qres.v, err
 }
 
-func (h *httpAPI) LabelValues(ctx context.Context, label string) (model.LabelValues, error) {
-	u := h.client.URL(epLabelValues, map[string]string{"name": label})
+func (h *httpAPI) Labels(ctx context.Context, start, end time.Time, match string) (model.LabelValues, error) {
+	u := h.client.URL(epLabels, nil)
+	q := u.Query()
+	if !start.IsZero() {
+		q.Set("start", start.Format(time.RFC3339Nano))
+	}
+	if !end.IsZero() {
+		q.Set("end", end.Format(time.RFC3339Nano))
+	}
+	if match != "" {
+		q.Set("match[]", match)
+	}
+	u.RawQuery = q.Encode()
+
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
@@ -230,6 +242,61 @@ func (h *httpAPI) LabelValues(ctx context.Context, label string) (model.LabelVal
 	var labelValues model.LabelValues
 	err = json.Unmarshal(body, &labelValues)
 	return labelValues, err
+}
+
+func (h *httpAPI) LabelValues(ctx context.Context, start, end time.Time, label string) (model.LabelValues, error) {
+	u := h.client.URL(epLabelValues, map[string]string{"name": label})
+	q := u.Query()
+	if !start.IsZero() {
+		q.Set("start", start.Format(time.RFC3339Nano))
+	}
+	if !end.IsZero() {
+		q.Set("end", end.Format(time.RFC3339Nano))
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	_, body, err := h.client.Do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var labelValues model.LabelValues
+	err = json.Unmarshal(body, &labelValues)
+	return labelValues, err
+}
+
+func (h *httpAPI) Series(ctx context.Context, start, end time.Time, match string) ([]model.Metric, error) {
+	u := h.client.URL(epSeries, nil)
+	q := u.Query()
+	if !start.IsZero() {
+		q.Set("start", start.Format(time.RFC3339Nano))
+	}
+	if !end.IsZero() {
+		q.Set("end", end.Format(time.RFC3339Nano))
+	}
+	if match != "" {
+		q.Set("match[]", match)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	_, body, err := h.client.Do(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var series []model.Metric
+	err = json.Unmarshal(body, &series)
+	return series, err
+}
+
+func (h *httpAPI) Proxy(method string, url string, params map[string]string, data map[string]string) (*grequests.Response, error) {
+	return h.client.Proxy(method, url, params, data)
 }
 
 // apiClient wraps a regular client and processes successful API responses.
@@ -283,5 +350,5 @@ func (c apiClient) Do(ctx context.Context, req *http.Request) (*http.Response, [
 		}
 	}
 
-	return resp, []byte(result.Data), err
+	return resp, result.Data, err
 }
