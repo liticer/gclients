@@ -20,22 +20,25 @@ package prometheus
 import (
 	"context"
 	"crypto/tls"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 	"time"
+
+	"github.com/levigross/grequests"
 )
 
 // DefaultRoundTripper is used if no RoundTripper is set in Config.
 var DefaultRoundTripper http.RoundTripper = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
-	Dial: (&net.Dialer{
+	DialContext: (&net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
-	}).Dial,
+	}).DialContext,
 	TLSHandshakeTimeout: 10 * time.Second,
 	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 }
@@ -73,6 +76,7 @@ func (cfg *Config) roundTripper() http.RoundTripper {
 type Client interface {
 	URL(ep string, args map[string]string) *url.URL
 	Do(context.Context, *http.Request) (*http.Response, []byte, error)
+	Proxy(method string, url string, params map[string]string, data map[string]string) (*grequests.Response, error)
 }
 
 // NewClient returns a new Client.
@@ -90,6 +94,7 @@ func NewClient(cfg Config) (Client, error) {
 		bearerToken: cfg.BearerToken,
 		username:    cfg.Username,
 		password:    cfg.Password,
+		timeout:     cfg.Timeout,
 		client:      http.Client{Transport: cfg.roundTripper()},
 	}, nil
 }
@@ -99,6 +104,7 @@ type httpClient struct {
 	username    string
 	password    string
 	bearerToken string
+	timeout     int
 	client      http.Client
 }
 
@@ -139,7 +145,7 @@ func (c *httpClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 	var body []byte
 	done := make(chan struct{})
 	go func() {
-		body, err = ioutil.ReadAll(resp.Body)
+		body, err = io.ReadAll(resp.Body)
 		close(done)
 	}()
 
@@ -154,4 +160,36 @@ func (c *httpClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 	}
 
 	return resp, body, err
+}
+
+func (c *httpClient) Proxy(method string, url string, params map[string]string, data map[string]string) (*grequests.Response, error) {
+	url = c.endpoint.String() + url
+	var err error
+	var response *grequests.Response
+	requestOptions := &grequests.RequestOptions{
+		Data:               data,
+		Params:             params,
+		RequestTimeout:     time.Duration(c.timeout) * time.Second,
+		InsecureSkipVerify: true,
+	}
+	if c.username != "" && c.password != "" {
+		requestOptions.Auth = []string{c.username, c.password}
+	} else if c.bearerToken != "" {
+		requestOptions.Headers = map[string]string{"Authorization": fmt.Sprintf("Bearer %s", c.bearerToken)}
+	}
+
+	switch method {
+	case http.MethodGet:
+		response, err = grequests.Get(url, requestOptions)
+	case http.MethodPost:
+		response, err = grequests.Post(url, requestOptions)
+	case http.MethodPut:
+		response, err = grequests.Put(url, requestOptions)
+	case http.MethodDelete:
+		response, err = grequests.Delete(url, requestOptions)
+	default:
+		return nil, fmt.Errorf("oh no, method %s has not been implemented", method)
+	}
+
+	return response, err
 }

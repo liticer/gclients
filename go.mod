@@ -16,6 +16,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/grafana/regexp v0.0.0-20221122212121-6b5c0a4cb7fd
 	github.com/kelseyhightower/envconfig v1.4.0
+	github.com/levigross/grequests v0.0.0-20231203190023-9c307ef1f48d
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.64.0
 	github.com/stretchr/testify v1.8.4
 	golang.org/x/exp v0.0.0-20221208152030-732eee02a75a
@@ -51,6 +52,7 @@ require (
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/google/gnostic v0.6.9 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/pprof v0.0.0-20221102093814-76f304f74e5e // indirect
 	github.com/google/uuid v1.5.0 // indirect
