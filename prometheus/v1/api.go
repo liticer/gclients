@@ -83,11 +83,11 @@ type API interface {
 	// QueryRange performs a query for the given range.
 	QueryRange(ctx context.Context, query string, r Range) (model.Value, error)
 	// Labels getting label names.
-	Labels(ctx context.Context, start, end time.Time, match string) (model.LabelValues, error)
+	Labels(ctx context.Context, start, end int64, match string) (model.LabelValues, error)
 	// LabelValues performs a query for the values of the given label.
-	LabelValues(ctx context.Context, start, end time.Time, label string) (model.LabelValues, error)
+	LabelValues(ctx context.Context, start, end int64, label string) (model.LabelValues, error)
 	// Series finding series by label matchers.
-	Series(ctx context.Context, start, end time.Time, match string) ([]model.Metric, error)
+	Series(ctx context.Context, start, end int64, match string) ([]model.Metric, error)
 	// Proxy request to prometheus endpoint
 	Proxy(method string, url string, params map[string]string, data map[string]string) (*grequests.Response, error)
 }
@@ -217,14 +217,14 @@ func (h *httpAPI) QueryRange(ctx context.Context, query string, r Range) (model.
 	return qres.v, err
 }
 
-func (h *httpAPI) Labels(ctx context.Context, start, end time.Time, match string) (model.LabelValues, error) {
+func (h *httpAPI) Labels(ctx context.Context, start, end int64, match string) (model.LabelValues, error) {
 	u := h.client.URL(epLabels, nil)
 	q := u.Query()
-	if !start.IsZero() {
-		q.Set("start", start.Format(time.RFC3339Nano))
+	if start != 0 {
+		q.Set("start", time.Unix(start, 0).Format(time.RFC3339Nano))
 	}
-	if !end.IsZero() {
-		q.Set("end", end.Format(time.RFC3339Nano))
+	if end != 0 {
+		q.Set("end", time.Unix(end, 0).Format(time.RFC3339Nano))
 	}
 	if match != "" {
 		q.Set("match[]", match)
@@ -244,14 +244,14 @@ func (h *httpAPI) Labels(ctx context.Context, start, end time.Time, match string
 	return labelValues, err
 }
 
-func (h *httpAPI) LabelValues(ctx context.Context, start, end time.Time, label string) (model.LabelValues, error) {
+func (h *httpAPI) LabelValues(ctx context.Context, start, end int64, label string) (model.LabelValues, error) {
 	u := h.client.URL(epLabelValues, map[string]string{"name": label})
 	q := u.Query()
-	if !start.IsZero() {
-		q.Set("start", start.Format(time.RFC3339Nano))
+	if start != 0 {
+		q.Set("start", time.Unix(start, 0).Format(time.RFC3339Nano))
 	}
-	if !end.IsZero() {
-		q.Set("end", end.Format(time.RFC3339Nano))
+	if end != 0 {
+		q.Set("end", time.Unix(end, 0).Format(time.RFC3339Nano))
 	}
 	u.RawQuery = q.Encode()
 
@@ -268,14 +268,14 @@ func (h *httpAPI) LabelValues(ctx context.Context, start, end time.Time, label s
 	return labelValues, err
 }
 
-func (h *httpAPI) Series(ctx context.Context, start, end time.Time, match string) ([]model.Metric, error) {
+func (h *httpAPI) Series(ctx context.Context, start, end int64, match string) ([]model.Metric, error) {
 	u := h.client.URL(epSeries, nil)
 	q := u.Query()
-	if !start.IsZero() {
-		q.Set("start", start.Format(time.RFC3339Nano))
+	if start != 0 {
+		q.Set("start", time.Unix(start, 0).Format(time.RFC3339Nano))
 	}
-	if !end.IsZero() {
-		q.Set("end", end.Format(time.RFC3339Nano))
+	if end != 0 {
+		q.Set("end", time.Unix(end, 0).Format(time.RFC3339Nano))
 	}
 	if match != "" {
 		q.Set("match[]", match)
