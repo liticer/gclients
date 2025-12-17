@@ -1,20 +1,16 @@
 package converter
 
 import (
-	"encoding/json"
-	"fmt"
-	alpha1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1alpha1"
-	"gopkg.in/yaml.v2"
-	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"math"
 	"strings"
 
-	v1beta1vm "github.com/VictoriaMetrics/operator/api/v1beta1"
-	"github.com/VictoriaMetrics/operator/controllers/factory"
-	v1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
-	ctrl "sigs.k8s.io/controller-runtime"
+	"k8s.io/utils/ptr"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	vmv1beta1 "github.com/VictoriaMetrics/operator/api/operator/v1beta1"
 )
 
 const (
@@ -22,57 +18,75 @@ const (
 	prometheusConfigmapDir = "/etc/prometheus/configmaps"
 )
 
-var log = ctrl.Log.WithValues("controller", "prometheus.converter")
+var log = logf.Log.WithName("controller.PrometheusConverter")
 
-func ConvertPromRule(prom *v1.PrometheusRule, conf *BaseOperatorConf) *v1beta1vm.VMRule {
-	ruleGroups := make([]v1beta1vm.RuleGroup, 0, len(prom.Spec.Groups))
+// ConvertPromRule creates VMRule from PrometheusRule
+func ConvertPromRule(prom *promv1.PrometheusRule, conf *BaseOperatorConf) *vmv1beta1.VMRule {
+	ruleGroups := make([]vmv1beta1.RuleGroup, 0, len(prom.Spec.Groups))
 	for _, promGroup := range prom.Spec.Groups {
-		ruleItems := make([]v1beta1vm.Rule, 0, len(promGroup.Rules))
+		ruleItems := make([]vmv1beta1.Rule, 0, len(promGroup.Rules))
 		for _, promRuleItem := range promGroup.Rules {
-			ruleItems = append(ruleItems, v1beta1vm.Rule{
+			trule := vmv1beta1.Rule{
 				Labels:      promRuleItem.Labels,
 				Annotations: promRuleItem.Annotations,
 				Expr:        promRuleItem.Expr.String(),
-				For:         string(promRuleItem.For),
 				Record:      promRuleItem.Record,
 				Alert:       promRuleItem.Alert,
-			})
+			}
+			if promRuleItem.For != nil {
+				trule.For = string(*promRuleItem.For)
+			}
+			if promRuleItem.KeepFiringFor != nil {
+				trule.KeepFiringFor = string(*promRuleItem.KeepFiringFor)
+			}
+			ruleItems = append(ruleItems, trule)
 		}
 
-		ruleGroups = append(ruleGroups, v1beta1vm.RuleGroup{
-			Name:     promGroup.Name,
-			Interval: string(promGroup.Interval),
-			Rules:    ruleItems,
-		})
+		tgroup := vmv1beta1.RuleGroup{
+			Name:   promGroup.Name,
+			Rules:  ruleItems,
+			Labels: promGroup.Labels,
+		}
+		if promGroup.QueryOffset != nil {
+			tgroup.EvalOffset = string(*promGroup.QueryOffset)
+		}
+		if promGroup.Limit != nil {
+			tgroup.Limit = *promGroup.Limit
+		}
+		if promGroup.Interval != nil {
+			tgroup.Interval = string(*promGroup.Interval)
+		}
+		ruleGroups = append(ruleGroups, tgroup)
 	}
-	cr := &v1beta1vm.VMRule{
+	cr := &vmv1beta1.VMRule{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   prom.Namespace,
 			Name:        prom.Name,
-			Labels:      filterPrefixes(prom.Labels, conf.FilterPrometheusConverterLabelPrefixes),
-			Annotations: filterPrefixes(prom.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
+			Labels:      FilterPrefixes(prom.Labels, conf.FilterPrometheusConverterLabelPrefixes),
+			Annotations: FilterPrefixes(prom.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
 		},
-		Spec: v1beta1vm.VMRuleSpec{
+		Spec: vmv1beta1.VMRuleSpec{
 			Groups: ruleGroups,
 		},
 	}
 	if conf.EnabledPrometheusConverterOwnerReferences {
 		cr.OwnerReferences = []metav1.OwnerReference{
 			{
-				APIVersion:         v1.SchemeGroupVersion.String(),
-				Kind:               v1.PrometheusRuleKind,
+				APIVersion:         promv1.SchemeGroupVersion.String(),
+				Kind:               promv1.PrometheusRuleKind,
 				Name:               prom.Name,
 				UID:                prom.UID,
-				Controller:         pointer.BoolPtr(true),
-				BlockOwnerDeletion: pointer.BoolPtr(true),
+				Controller:         ptr.To(true),
+				BlockOwnerDeletion: ptr.To(true),
 			},
 		}
 	}
-	cr.Annotations = maybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cr.Annotations)
+	cr.Annotations = MaybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cr.Annotations)
 	return cr
 }
 
-func maybeAddArgoCDIgnoreAnnotations(mustAdd bool, dst map[string]string) map[string]string {
+// MaybeAddArgoCDIgnoreAnnotations optionally adds ArgoCD annotations
+func MaybeAddArgoCDIgnoreAnnotations(mustAdd bool, dst map[string]string) map[string]string {
 	if !mustAdd {
 		// fast path
 		return dst
@@ -85,214 +99,86 @@ func maybeAddArgoCDIgnoreAnnotations(mustAdd bool, dst map[string]string) map[st
 	return dst
 }
 
-func convertMatchers(promMatchers []alpha1.Matcher) []string {
-	if promMatchers == nil {
-		return nil
-	}
-	r := make([]string, 0, len(promMatchers))
-	for _, pm := range promMatchers {
-		if pm.Regex && pm.MatchType == "" {
-			pm.MatchType = "=~"
-		}
-		if pm.MatchType == "" {
-			pm.MatchType = "="
-		}
-		r = append(r, pm.String())
-	}
-	return r
-}
-
-func convertRoute(promRoute *alpha1.Route) (*v1beta1vm.Route, error) {
-	if promRoute == nil {
-		return nil, nil
-	}
-	r := v1beta1vm.Route{
-		Receiver:            promRoute.Receiver,
-		Continue:            promRoute.Continue,
-		GroupBy:             promRoute.GroupBy,
-		GroupWait:           promRoute.GroupWait,
-		GroupInterval:       promRoute.GroupInterval,
-		RepeatInterval:      promRoute.RepeatInterval,
-		Matchers:            convertMatchers(promRoute.Matchers),
-		MuteTimeIntervals:   promRoute.MuteTimeIntervals,
-		ActiveTimeIntervals: promRoute.ActiveTimeIntervals,
-	}
-	for _, route := range promRoute.Routes {
-		var promRoute alpha1.Route
-		if err := json.Unmarshal(route.Raw, &promRoute); err != nil {
-			return nil, fmt.Errorf("cannot parse raw prom route: %s, err: %w", string(route.Raw), err)
-		}
-		vmRoute, err := convertRoute(&promRoute)
-		if err != nil {
-			return nil, err
-		}
-		data, err := json.Marshal(vmRoute)
-		if err != nil {
-			return nil, fmt.Errorf("cannot serialize vm route for alertmanager config: %w", err)
-		}
-		r.RawRoutes = append(r.RawRoutes, apiextensionsv1.JSON{Raw: data})
-	}
-	return &r, nil
-}
-
-func convertInhibitRules(promIRs []alpha1.InhibitRule) []v1beta1vm.InhibitRule {
-	if promIRs == nil {
-		return nil
-	}
-	vmIRs := make([]v1beta1vm.InhibitRule, 0, len(promIRs))
-	for _, promIR := range promIRs {
-		ir := v1beta1vm.InhibitRule{
-			TargetMatchers: convertMatchers(promIR.TargetMatch),
-			SourceMatchers: convertMatchers(promIR.SourceMatch),
-			Equal:          promIR.Equal,
-		}
-		vmIRs = append(vmIRs, ir)
-	}
-	return vmIRs
-}
-
-func convertMuteIntervals(promMIs []alpha1.MuteTimeInterval) []v1beta1vm.MuteTimeInterval {
-	if promMIs == nil {
-		return nil
-	}
-
-	vmMIs := make([]v1beta1vm.MuteTimeInterval, 0, len(promMIs))
-	for _, promMI := range promMIs {
-		vmMI := v1beta1vm.MuteTimeInterval{
-			Name:          promMI.Name,
-			TimeIntervals: make([]v1beta1vm.TimeInterval, 0, len(promMI.TimeIntervals)),
-		}
-		for _, tis := range promMI.TimeIntervals {
-			var vmTIs v1beta1vm.TimeInterval
-			for _, t := range tis.Times {
-				vmTIs.Times = append(vmTIs.Times, v1beta1vm.TimeRange{EndTime: string(t.EndTime), StartTime: string(t.StartTime)})
-			}
-			for _, dm := range tis.DaysOfMonth {
-				vmTIs.DaysOfMonth = append(vmTIs.DaysOfMonth, fmt.Sprintf("%d:%d", dm.Start, dm.End))
-			}
-			for _, wm := range tis.Weekdays {
-				vmTIs.Weekdays = append(vmTIs.Weekdays, string(wm))
-			}
-			for _, y := range tis.Years {
-				vmTIs.Years = append(vmTIs.Years, string(y))
-			}
-			for _, m := range tis.Months {
-				vmTIs.Months = append(vmTIs.Months, string(m))
-			}
-			vmMI.TimeIntervals = append(vmMI.TimeIntervals, vmTIs)
-		}
-		vmMIs = append(vmMIs, vmMI)
-	}
-	return vmMIs
-}
-
-func convertReceivers(promReceivers []alpha1.Receiver) ([]v1beta1vm.Receiver, error) {
-	// yaml instead of json is used by purpose
-	// prometheus-operator objects has different field tags
-	marshaledRcvs, err := yaml.Marshal(promReceivers)
-	if err != nil {
-		return nil, fmt.Errorf("possible bug, cannot serialize prometheus receivers, err: %w", err)
-	}
-	var vmReceivers []v1beta1vm.Receiver
-	if err := yaml.Unmarshal(marshaledRcvs, &vmReceivers); err != nil {
-		return nil, fmt.Errorf("cannot parse serialized prometheus receievers: %s, err: %w", string(marshaledRcvs), err)
-	}
-	return vmReceivers, nil
-}
-
-func ConvertAlertmanagerConfig(promAMCfg *alpha1.AlertmanagerConfig, conf *BaseOperatorConf) (*v1beta1vm.VMAlertmanagerConfig, error) {
-	vamc := &v1beta1vm.VMAlertmanagerConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        promAMCfg.Name,
-			Namespace:   promAMCfg.Namespace,
-			Annotations: filterPrefixes(promAMCfg.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
-			Labels:      filterPrefixes(promAMCfg.Labels, conf.FilterPrometheusConverterLabelPrefixes),
-		},
-		Spec: v1beta1vm.VMAlertmanagerConfigSpec{
-			InhibitRules:     convertInhibitRules(promAMCfg.Spec.InhibitRules),
-			MutTimeIntervals: convertMuteIntervals(promAMCfg.Spec.MuteTimeIntervals),
-		},
-	}
-	convertedRoute, err := convertRoute(promAMCfg.Spec.Route)
-	if err != nil {
-		return nil, fmt.Errorf("cannot convert prometheus alertmanager config: %s into vm, err: %w", promAMCfg.Name, err)
-	}
-	vamc.Spec.Route = convertedRoute
-	convertedReceivers, err := convertReceivers(promAMCfg.Spec.Receivers)
-	if err != nil {
-		return nil, fmt.Errorf("cannot convert prometheus alertmanager config: %s into vm, err: %w", promAMCfg.Name, err)
-	}
-	vamc.Spec.Receivers = convertedReceivers
-	if conf.EnabledPrometheusConverterOwnerReferences {
-		vamc.OwnerReferences = []metav1.OwnerReference{
-			{
-				APIVersion:         alpha1.SchemeGroupVersion.String(),
-				Kind:               alpha1.AlertmanagerConfigKind,
-				Name:               promAMCfg.Name,
-				UID:                promAMCfg.UID,
-				Controller:         pointer.BoolPtr(true),
-				BlockOwnerDeletion: pointer.BoolPtr(true),
-			},
-		}
-	}
-	vamc.Annotations = maybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, vamc.Annotations)
-	return vamc, nil
-}
-
-func ConvertServiceMonitor(serviceMon *v1.ServiceMonitor, conf *BaseOperatorConf) *v1beta1vm.VMServiceScrape {
-	cs := &v1beta1vm.VMServiceScrape{
+// ConvertServiceMonitor create VMServiceScrape from ServiceMonitor
+func ConvertServiceMonitor(serviceMon *promv1.ServiceMonitor, conf *BaseOperatorConf) *vmv1beta1.VMServiceScrape {
+	cs := &vmv1beta1.VMServiceScrape{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        serviceMon.Name,
 			Namespace:   serviceMon.Namespace,
-			Annotations: filterPrefixes(serviceMon.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
-			Labels:      filterPrefixes(serviceMon.Labels, conf.FilterPrometheusConverterLabelPrefixes),
+			Annotations: FilterPrefixes(serviceMon.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
+			Labels:      FilterPrefixes(serviceMon.Labels, conf.FilterPrometheusConverterLabelPrefixes),
 		},
-		Spec: v1beta1vm.VMServiceScrapeSpec{
+		Spec: vmv1beta1.VMServiceScrapeSpec{
 			JobLabel:        serviceMon.Spec.JobLabel,
 			TargetLabels:    serviceMon.Spec.TargetLabels,
 			PodTargetLabels: serviceMon.Spec.PodTargetLabels,
-			SampleLimit:     serviceMon.Spec.SampleLimit,
 			Selector:        serviceMon.Spec.Selector,
-			Endpoints:       ConvertEndpoint(serviceMon.Spec.Endpoints),
-			NamespaceSelector: v1beta1vm.NamespaceSelector{
+			Endpoints:       convertEndpoint(serviceMon.Spec.Endpoints),
+			DiscoveryRole:   convertDiscoveryRole(serviceMon.Spec.ServiceDiscoveryRole),
+			NamespaceSelector: vmv1beta1.NamespaceSelector{
 				Any:        serviceMon.Spec.NamespaceSelector.Any,
 				MatchNames: serviceMon.Spec.NamespaceSelector.MatchNames,
 			},
+			ScrapeClassName: serviceMon.Spec.ScrapeClassName,
 		},
+	}
+	if serviceMon.Spec.SampleLimit != nil && *serviceMon.Spec.SampleLimit <= uint64(math.MaxInt) {
+		cs.Spec.SampleLimit = int(*serviceMon.Spec.SampleLimit)
+	}
+	if serviceMon.Spec.AttachMetadata != nil {
+		cs.Spec.AttachMetadata = vmv1beta1.AttachMetadata{
+			Node: serviceMon.Spec.AttachMetadata.Node,
+		}
 	}
 	if conf.EnabledPrometheusConverterOwnerReferences {
 		cs.OwnerReferences = []metav1.OwnerReference{
 			{
-				APIVersion:         v1.SchemeGroupVersion.String(),
-				Kind:               v1.ServiceMonitorsKind,
+				APIVersion:         promv1.SchemeGroupVersion.String(),
+				Kind:               promv1.ServiceMonitorsKind,
 				Name:               serviceMon.Name,
 				UID:                serviceMon.UID,
-				Controller:         pointer.BoolPtr(true),
-				BlockOwnerDeletion: pointer.BoolPtr(true),
+				Controller:         ptr.To(true),
+				BlockOwnerDeletion: ptr.To(true),
 			},
 		}
 	}
-	cs.Annotations = maybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cs.Annotations)
+	cs.Annotations = MaybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cs.Annotations)
 	return cs
 }
 
-func replacePromDirPath(origin string) string {
+// ReplacePromDirPath replace prometheus directory path for config maps and secrets to VM one
+func ReplacePromDirPath(origin string) string {
 	if strings.HasPrefix(origin, prometheusSecretDir) {
-		return strings.Replace(origin, prometheusSecretDir, factory.SecretsDir, 1)
+		return strings.Replace(origin, prometheusSecretDir, vmv1beta1.SecretsDir, 1)
 	}
 	if strings.HasPrefix(origin, prometheusConfigmapDir) {
-		return strings.Replace(origin, prometheusConfigmapDir, factory.ConfigMapsDir, 1)
+		return strings.Replace(origin, prometheusConfigmapDir, vmv1beta1.ConfigMapsDir, 1)
 	}
 	return origin
 }
 
-func convertOAuth(src *v1.OAuth2) *v1beta1vm.OAuth2 {
+func convertDiscoveryRole(src *promv1.ServiceDiscoveryRole) string {
+	var role string
+	if src == nil {
+		return role
+	}
+	switch *src {
+	case promv1.EndpointsRole:
+		role = "endpoints"
+	case promv1.EndpointSliceRole:
+		role = "endpointslices"
+	}
+	return role
+}
+
+// ConvertOAuth converts prometheus OAuth config to VM one
+func ConvertOAuth(src *promv1.OAuth2) *vmv1beta1.OAuth2 {
 	if src == nil {
 		return nil
 	}
 
-	o := v1beta1vm.OAuth2{
-		ClientID:       ConvertSecretOrConfigmap(src.ClientID),
+	o := vmv1beta1.OAuth2{
+		ClientID:       convertSecretOrConfigmap(src.ClientID),
 		ClientSecret:   &src.ClientSecret,
 		Scopes:         src.Scopes,
 		TokenURL:       src.TokenURL,
@@ -301,217 +187,268 @@ func convertOAuth(src *v1.OAuth2) *v1beta1vm.OAuth2 {
 	return &o
 }
 
-func convertAuthorization(srcSafe *v1.SafeAuthorization, src *v1.Authorization) *v1beta1vm.Authorization {
+// ConvertAuthorization converts prometheus auth struct to VM one
+func ConvertAuthorization(srcSafe *promv1.SafeAuthorization, src *promv1.Authorization) *vmv1beta1.Authorization {
 	if srcSafe == nil && src == nil {
 		return nil
 	}
 	if srcSafe != nil {
-		return &v1beta1vm.Authorization{
+		return &vmv1beta1.Authorization{
 			Type:        srcSafe.Type,
 			Credentials: srcSafe.Credentials,
 		}
 	}
-	return &v1beta1vm.Authorization{
+	return &vmv1beta1.Authorization{
 		Type:            src.Type,
 		Credentials:     src.Credentials,
 		CredentialsFile: src.CredentialsFile,
 	}
 }
 
-func convertBearerToken(src corev1.SecretKeySelector) *corev1.SecretKeySelector {
-	if src.Key == "" && src.Name == "" {
+func convertBearerToken(src *corev1.SecretKeySelector) *corev1.SecretKeySelector {
+	if src == nil || (src.Key == "" && src.Name == "") {
 		return nil
 	}
-	return &src
+	return src
 }
 
-func ConvertEndpoint(promEndpoint []v1.Endpoint) []v1beta1vm.Endpoint {
-	endpoints := make([]v1beta1vm.Endpoint, 0, len(promEndpoint))
+func convertEndpoint(promEndpoint []promv1.Endpoint) []vmv1beta1.Endpoint {
+	endpoints := make([]vmv1beta1.Endpoint, 0, len(promEndpoint))
 	for _, endpoint := range promEndpoint {
-		ep := v1beta1vm.Endpoint{
-			Port:                 endpoint.Port,
-			TargetPort:           endpoint.TargetPort,
-			Path:                 endpoint.Path,
-			Scheme:               endpoint.Scheme,
-			Params:               endpoint.Params,
-			Interval:             string(endpoint.Interval),
-			ScrapeTimeout:        string(endpoint.ScrapeTimeout),
-			BearerTokenFile:      replacePromDirPath(endpoint.BearerTokenFile),
-			HonorLabels:          endpoint.HonorLabels,
-			HonorTimestamps:      endpoint.HonorTimestamps,
-			BasicAuth:            ConvertBasicAuth(endpoint.BasicAuth),
-			TLSConfig:            ConvertTlsConfig(endpoint.TLSConfig),
-			MetricRelabelConfigs: ConvertRelabelConfig(endpoint.MetricRelabelConfigs),
-			RelabelConfigs:       ConvertRelabelConfig(endpoint.RelabelConfigs),
-			ProxyURL:             endpoint.ProxyURL,
-			BearerTokenSecret:    convertBearerToken(endpoint.BearerTokenSecret),
-			OAuth2:               convertOAuth(endpoint.OAuth2),
-			FollowRedirects:      endpoint.FollowRedirects,
-			Authorization:        convertAuthorization(endpoint.Authorization, nil),
+		ep := vmv1beta1.Endpoint{
+			Port:       endpoint.Port,
+			TargetPort: endpoint.TargetPort,
+			EndpointScrapeParams: vmv1beta1.EndpointScrapeParams{
+				Path:            endpoint.Path,
+				Scheme:          endpoint.Scheme,
+				Params:          endpoint.Params,
+				Interval:        string(endpoint.Interval),
+				ScrapeTimeout:   string(endpoint.ScrapeTimeout),
+				HonorLabels:     endpoint.HonorLabels,
+				HonorTimestamps: endpoint.HonorTimestamps,
+				ProxyURL:        endpoint.ProxyURL,
+				FollowRedirects: endpoint.FollowRedirects,
+			},
+			EndpointAuth: vmv1beta1.EndpointAuth{
+				BasicAuth:     ConvertBasicAuth(endpoint.BasicAuth),
+				TLSConfig:     ConvertTLSConfig(endpoint.TLSConfig),
+				OAuth2:        ConvertOAuth(endpoint.OAuth2),
+				Authorization: ConvertAuthorization(endpoint.Authorization, nil),
+				// Unless prometheus deletes BearerTokenFile, we have to support it for backward compatibility
+				//nolint:staticcheck
+				BearerTokenFile: ReplacePromDirPath(endpoint.BearerTokenFile),
+				// Unless prometheus deletes BearerTokenSecret, we have to support it for backward compatibility
+				//nolint:staticcheck
+				BearerTokenSecret: convertBearerToken(endpoint.BearerTokenSecret),
+			},
+			EndpointRelabelings: vmv1beta1.EndpointRelabelings{
+				MetricRelabelConfigs: ConvertRelabelConfig(endpoint.MetricRelabelConfigs),
+				RelabelConfigs:       ConvertRelabelConfig(endpoint.RelabelConfigs),
+			},
 		}
 
 		endpoints = append(endpoints, ep)
 	}
 	return endpoints
-
 }
 
-func ConvertBasicAuth(bAuth *v1.BasicAuth) *v1beta1vm.BasicAuth {
+// ConvertBasicAuth converts Prometheus basic auth config to VM one
+func ConvertBasicAuth(bAuth *promv1.BasicAuth) *vmv1beta1.BasicAuth {
 	if bAuth == nil {
 		return nil
 	}
-	return &v1beta1vm.BasicAuth{
+	return &vmv1beta1.BasicAuth{
 		Username: bAuth.Username,
 		Password: bAuth.Password,
 	}
 }
 
-func ConvertTlsConfig(tlsConf *v1.TLSConfig) *v1beta1vm.TLSConfig {
+// ConvertTLSConfig converts Prometheus TLS config to VM one
+func ConvertTLSConfig(tlsConf *promv1.TLSConfig) *vmv1beta1.TLSConfig {
 	if tlsConf == nil {
 		return nil
 	}
-	return &v1beta1vm.TLSConfig{
-		CAFile:             replacePromDirPath(tlsConf.CAFile),
-		CA:                 ConvertSecretOrConfigmap(tlsConf.CA),
-		CertFile:           replacePromDirPath(tlsConf.CertFile),
-		Cert:               ConvertSecretOrConfigmap(tlsConf.Cert),
-		KeyFile:            replacePromDirPath(tlsConf.KeyFile),
-		KeySecret:          tlsConf.KeySecret,
-		InsecureSkipVerify: tlsConf.InsecureSkipVerify,
-		ServerName:         tlsConf.ServerName,
+	tc := &vmv1beta1.TLSConfig{
+		CAFile:    ReplacePromDirPath(tlsConf.CAFile),
+		CA:        convertSecretOrConfigmap(tlsConf.CA),
+		CertFile:  ReplacePromDirPath(tlsConf.CertFile),
+		Cert:      convertSecretOrConfigmap(tlsConf.Cert),
+		KeyFile:   ReplacePromDirPath(tlsConf.KeyFile),
+		KeySecret: tlsConf.KeySecret,
 	}
+
+	if tlsConf.InsecureSkipVerify != nil {
+		tc.InsecureSkipVerify = *tlsConf.InsecureSkipVerify
+	}
+	if tlsConf.ServerName != nil {
+		tc.ServerName = *tlsConf.ServerName
+	}
+	return tc
 }
 
-func ConvertSafeTlsConfig(tlsConf *v1.SafeTLSConfig) *v1beta1vm.TLSConfig {
+// ConvertSafeTLSConfig performs convert ConvertSafeTLSConfig to vm version
+func ConvertSafeTLSConfig(tlsConf *promv1.SafeTLSConfig) *vmv1beta1.TLSConfig {
 	if tlsConf == nil {
 		return nil
 	}
-	return &v1beta1vm.TLSConfig{
-		CA:                 ConvertSecretOrConfigmap(tlsConf.CA),
-		Cert:               ConvertSecretOrConfigmap(tlsConf.Cert),
-		KeySecret:          tlsConf.KeySecret,
-		InsecureSkipVerify: tlsConf.InsecureSkipVerify,
-		ServerName:         tlsConf.ServerName,
+	tc := &vmv1beta1.TLSConfig{
+		CA:        convertSecretOrConfigmap(tlsConf.CA),
+		Cert:      convertSecretOrConfigmap(tlsConf.Cert),
+		KeySecret: tlsConf.KeySecret,
 	}
+	if tlsConf.InsecureSkipVerify != nil {
+		tc.InsecureSkipVerify = *tlsConf.InsecureSkipVerify
+	}
+	if tlsConf.ServerName != nil {
+		tc.ServerName = *tlsConf.ServerName
+	}
+
+	return tc
 }
 
-func ConvertSecretOrConfigmap(promSCM v1.SecretOrConfigMap) v1beta1vm.SecretOrConfigMap {
-	return v1beta1vm.SecretOrConfigMap{
+func convertSecretOrConfigmap(promSCM promv1.SecretOrConfigMap) vmv1beta1.SecretOrConfigMap {
+	return vmv1beta1.SecretOrConfigMap{
 		Secret:    promSCM.Secret,
 		ConfigMap: promSCM.ConfigMap,
 	}
 }
 
-func ConvertRelabelConfig(promRelabelConfig []*v1.RelabelConfig) []*v1beta1vm.RelabelConfig {
+// ConvertRelabelConfig converts Prometheus relabel config to VM one
+func ConvertRelabelConfig(promRelabelConfig []promv1.RelabelConfig) []*vmv1beta1.RelabelConfig {
 	if promRelabelConfig == nil {
 		return nil
 	}
-	relabelCfg := []*v1beta1vm.RelabelConfig{}
-	sourceLabelsToStringSlice := func(src []v1.LabelName) []string {
+	relabelCfg := []*vmv1beta1.RelabelConfig{}
+	sourceLabelsToStringSlice := func(src []promv1.LabelName) []string {
+		if len(src) == 0 {
+			return nil
+		}
 		res := make([]string, len(src))
 		for i, v := range src {
 			res[i] = string(v)
 		}
 		return res
 	}
-	for _, relabel := range promRelabelConfig {
-		relabelCfg = append(relabelCfg, &v1beta1vm.RelabelConfig{
+	for idx, relabel := range promRelabelConfig {
+		relabelCfg = append(relabelCfg, &vmv1beta1.RelabelConfig{
 			SourceLabels: sourceLabelsToStringSlice(relabel.SourceLabels),
 			Separator:    relabel.Separator,
 			TargetLabel:  relabel.TargetLabel,
-			Regex:        relabel.Regex,
 			Modulus:      relabel.Modulus,
 			Replacement:  relabel.Replacement,
 			Action:       relabel.Action,
 		})
+		if len(relabel.Regex) > 0 {
+			relabelCfg[idx].Regex = vmv1beta1.StringOrArray{relabel.Regex}
+		}
 	}
 	return filterUnsupportedRelabelCfg(relabelCfg)
-
 }
 
-func ConvertPodEndpoints(promPodEnpoints []v1.PodMetricsEndpoint) []v1beta1vm.PodMetricsEndpoint {
+func convertPodEndpoints(promPodEnpoints []promv1.PodMetricsEndpoint) []vmv1beta1.PodMetricsEndpoint {
 	if promPodEnpoints == nil {
 		return nil
 	}
-	endPoints := make([]v1beta1vm.PodMetricsEndpoint, 0, len(promPodEnpoints))
+	endPoints := make([]vmv1beta1.PodMetricsEndpoint, 0, len(promPodEnpoints))
 	for _, promEndPoint := range promPodEnpoints {
-		if promEndPoint.Authorization != nil {
-
-		}
-		var safeTls *v1.SafeTLSConfig
+		var safeTLS *promv1.SafeTLSConfig
 		if promEndPoint.TLSConfig != nil {
-			safeTls = &promEndPoint.TLSConfig.SafeTLSConfig
+			safeTLS = promEndPoint.TLSConfig
 		}
-		ep := v1beta1vm.PodMetricsEndpoint{
-			TargetPort:           promEndPoint.TargetPort,
-			Port:                 promEndPoint.Port,
-			Interval:             string(promEndPoint.Interval),
-			Path:                 promEndPoint.Path,
-			Scheme:               promEndPoint.Scheme,
-			Params:               promEndPoint.Params,
-			ScrapeTimeout:        string(promEndPoint.ScrapeTimeout),
-			HonorLabels:          promEndPoint.HonorLabels,
-			HonorTimestamps:      promEndPoint.HonorTimestamps,
-			ProxyURL:             promEndPoint.ProxyURL,
-			RelabelConfigs:       ConvertRelabelConfig(promEndPoint.RelabelConfigs),
-			MetricRelabelConfigs: ConvertRelabelConfig(promEndPoint.MetricRelabelConfigs),
-			BasicAuth:            ConvertBasicAuth(promEndPoint.BasicAuth),
-			TLSConfig:            ConvertSafeTlsConfig(safeTls),
-			OAuth2:               convertOAuth(promEndPoint.OAuth2),
-			FollowRedirects:      promEndPoint.FollowRedirects,
-			BearerTokenSecret:    convertBearerToken(promEndPoint.BearerTokenSecret),
-			Authorization:        convertAuthorization(promEndPoint.Authorization, nil),
+		ep := vmv1beta1.PodMetricsEndpoint{
+			Port:       promEndPoint.Port,
+			PortNumber: promEndPoint.PortNumber,
+			// Unless prometheus deletes TargetPort, we have to support it for backward compatibility
+			//nolint:staticcheck
+			TargetPort: promEndPoint.TargetPort,
+			// Unless prometheus deletes BearerTokenSecret, we have to support it for backward compatibility
+			//nolint:staticcheck
+			EndpointScrapeParams: vmv1beta1.EndpointScrapeParams{
+				Interval:        string(promEndPoint.Interval),
+				Path:            promEndPoint.Path,
+				Scheme:          promEndPoint.Scheme,
+				Params:          promEndPoint.Params,
+				ScrapeTimeout:   string(promEndPoint.ScrapeTimeout),
+				HonorLabels:     promEndPoint.HonorLabels,
+				HonorTimestamps: promEndPoint.HonorTimestamps,
+				ProxyURL:        promEndPoint.ProxyURL,
+				FollowRedirects: promEndPoint.FollowRedirects,
+			},
+			EndpointRelabelings: vmv1beta1.EndpointRelabelings{
+				RelabelConfigs:       ConvertRelabelConfig(promEndPoint.RelabelConfigs),
+				MetricRelabelConfigs: ConvertRelabelConfig(promEndPoint.MetricRelabelConfigs),
+			},
+
+			EndpointAuth: vmv1beta1.EndpointAuth{
+				BasicAuth: ConvertBasicAuth(promEndPoint.BasicAuth),
+				//nolint:staticcheck
+				BearerTokenSecret: convertBearerToken(promEndPoint.BearerTokenSecret),
+				TLSConfig:         ConvertSafeTLSConfig(safeTLS),
+				OAuth2:            ConvertOAuth(promEndPoint.OAuth2),
+				Authorization:     ConvertAuthorization(promEndPoint.Authorization, nil),
+			},
+			FilterRunning: promEndPoint.FilterRunning,
 		}
 		endPoints = append(endPoints, ep)
 	}
 	return endPoints
 }
 
-func ConvertPodMonitor(podMon *v1.PodMonitor, conf *BaseOperatorConf) *v1beta1vm.VMPodScrape {
-	cs := &v1beta1vm.VMPodScrape{
+// ConvertPodMonitor create VMPodScrape from PodMonitor
+func ConvertPodMonitor(podMon *promv1.PodMonitor, conf *BaseOperatorConf) *vmv1beta1.VMPodScrape {
+	cs := &vmv1beta1.VMPodScrape{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        podMon.Name,
 			Namespace:   podMon.Namespace,
-			Labels:      filterPrefixes(podMon.Labels, conf.FilterPrometheusConverterLabelPrefixes),
-			Annotations: filterPrefixes(podMon.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
+			Labels:      FilterPrefixes(podMon.Labels, conf.FilterPrometheusConverterLabelPrefixes),
+			Annotations: FilterPrefixes(podMon.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
 		},
-		Spec: v1beta1vm.VMPodScrapeSpec{
+		Spec: vmv1beta1.VMPodScrapeSpec{
 			JobLabel:        podMon.Spec.JobLabel,
 			PodTargetLabels: podMon.Spec.PodTargetLabels,
 			Selector:        podMon.Spec.Selector,
-			NamespaceSelector: v1beta1vm.NamespaceSelector{
+			NamespaceSelector: vmv1beta1.NamespaceSelector{
 				Any:        podMon.Spec.NamespaceSelector.Any,
 				MatchNames: podMon.Spec.NamespaceSelector.MatchNames,
 			},
-			SampleLimit:         podMon.Spec.SampleLimit,
-			PodMetricsEndpoints: ConvertPodEndpoints(podMon.Spec.PodMetricsEndpoints),
+			PodMetricsEndpoints: convertPodEndpoints(podMon.Spec.PodMetricsEndpoints),
+			ScrapeClassName:     podMon.Spec.ScrapeClassName,
 		},
+	}
+	if podMon.Spec.SampleLimit != nil && *podMon.Spec.SampleLimit <= uint64(math.MaxInt) {
+		cs.Spec.SampleLimit = int(*podMon.Spec.SampleLimit)
+	}
+	if podMon.Spec.AttachMetadata != nil {
+		cs.Spec.AttachMetadata = vmv1beta1.AttachMetadata{
+			Node: podMon.Spec.AttachMetadata.Node,
+		}
 	}
 	if conf.EnabledPrometheusConverterOwnerReferences {
 		cs.OwnerReferences = []metav1.OwnerReference{
 			{
-				APIVersion:         v1.SchemeGroupVersion.String(),
-				Kind:               v1.PodMonitorsKind,
+				APIVersion:         promv1.SchemeGroupVersion.String(),
+				Kind:               promv1.PodMonitorsKind,
 				Name:               podMon.Name,
 				UID:                podMon.UID,
-				Controller:         pointer.BoolPtr(true),
-				BlockOwnerDeletion: pointer.BoolPtr(true),
+				Controller:         ptr.To(true),
+				BlockOwnerDeletion: ptr.To(true),
 			},
 		}
 	}
-	cs.Annotations = maybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cs.Annotations)
+	cs.Annotations = MaybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cs.Annotations)
 	return cs
 }
 
-func ConvertProbe(probe *v1.Probe, conf *BaseOperatorConf) *v1beta1vm.VMProbe {
+// ConvertProbe creates VMProbe from prometheus probe
+func ConvertProbe(probe *promv1.Probe, conf *BaseOperatorConf) *vmv1beta1.VMProbe {
 	var (
-		ingressTarget *v1beta1vm.ProbeTargetIngress
-		staticTargets *v1beta1vm.VMProbeTargetStaticConfig
+		ingressTarget *vmv1beta1.ProbeTargetIngress
+		staticTargets *vmv1beta1.VMProbeTargetStaticConfig
 	)
 	if probe.Spec.Targets.Ingress != nil {
-		ingressTarget = &v1beta1vm.ProbeTargetIngress{
+		ingressTarget = &vmv1beta1.ProbeTargetIngress{
 			Selector: probe.Spec.Targets.Ingress.Selector,
-			NamespaceSelector: v1beta1vm.NamespaceSelector{
+			NamespaceSelector: vmv1beta1.NamespaceSelector{
 				Any:        probe.Spec.Targets.Ingress.NamespaceSelector.Any,
 				MatchNames: probe.Spec.Targets.Ingress.NamespaceSelector.MatchNames,
 			},
@@ -519,67 +456,79 @@ func ConvertProbe(probe *v1.Probe, conf *BaseOperatorConf) *v1beta1vm.VMProbe {
 		}
 	}
 	if probe.Spec.Targets.StaticConfig != nil {
-		staticTargets = &v1beta1vm.VMProbeTargetStaticConfig{
-			Targets: probe.Spec.Targets.StaticConfig.Targets,
-			Labels:  probe.Spec.Targets.StaticConfig.Labels,
+		staticTargets = &vmv1beta1.VMProbeTargetStaticConfig{
+			Targets:        probe.Spec.Targets.StaticConfig.Targets,
+			Labels:         probe.Spec.Targets.StaticConfig.Labels,
+			RelabelConfigs: ConvertRelabelConfig(probe.Spec.Targets.StaticConfig.RelabelConfigs),
 		}
 	}
-	var safeTls *v1.SafeTLSConfig
+	var safeTLS *promv1.SafeTLSConfig
 	if probe.Spec.TLSConfig != nil {
-		safeTls = &probe.Spec.TLSConfig.SafeTLSConfig
+		safeTLS = probe.Spec.TLSConfig
 	}
-	cp := &v1beta1vm.VMProbe{
+	cp := &vmv1beta1.VMProbe{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        probe.Name,
 			Namespace:   probe.Namespace,
-			Labels:      filterPrefixes(probe.Labels, conf.FilterPrometheusConverterLabelPrefixes),
-			Annotations: filterPrefixes(probe.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
+			Labels:      FilterPrefixes(probe.Labels, conf.FilterPrometheusConverterLabelPrefixes),
+			Annotations: FilterPrefixes(probe.Annotations, conf.FilterPrometheusConverterAnnotationPrefixes),
 		},
-		Spec: v1beta1vm.VMProbeSpec{
+		Spec: vmv1beta1.VMProbeSpec{
 			JobName: probe.Spec.JobName,
-			VMProberSpec: v1beta1vm.VMProberSpec{
+			VMProberSpec: vmv1beta1.VMProberSpec{
 				URL:    probe.Spec.ProberSpec.URL,
 				Scheme: probe.Spec.ProberSpec.Scheme,
 				Path:   probe.Spec.ProberSpec.Path,
 			},
 			Module: probe.Spec.Module,
-			Targets: v1beta1vm.VMProbeTargets{
+			Targets: vmv1beta1.VMProbeTargets{
 				Ingress:      ingressTarget,
 				StaticConfig: staticTargets,
 			},
-			Interval:          string(probe.Spec.Interval),
-			ScrapeTimeout:     string(probe.Spec.ScrapeTimeout),
-			BasicAuth:         ConvertBasicAuth(probe.Spec.BasicAuth),
-			TLSConfig:         ConvertSafeTlsConfig(safeTls),
-			BearerTokenSecret: convertBearerToken(probe.Spec.BearerTokenSecret),
-			OAuth2:            convertOAuth(probe.Spec.OAuth2),
-			SampleLimit:       probe.Spec.SampleLimit,
-			Authorization:     convertAuthorization(probe.Spec.Authorization, nil),
+			EndpointScrapeParams: vmv1beta1.EndpointScrapeParams{
+				Interval:      string(probe.Spec.Interval),
+				ScrapeTimeout: string(probe.Spec.ScrapeTimeout),
+			},
+			MetricRelabelConfigs: ConvertRelabelConfig(probe.Spec.MetricRelabelConfigs),
+			EndpointAuth: vmv1beta1.EndpointAuth{
+				BasicAuth:         ConvertBasicAuth(probe.Spec.BasicAuth),
+				BearerTokenSecret: convertBearerToken(&probe.Spec.BearerTokenSecret),
+				TLSConfig:         ConvertSafeTLSConfig(safeTLS),
+				OAuth2:            ConvertOAuth(probe.Spec.OAuth2),
+				Authorization:     ConvertAuthorization(probe.Spec.Authorization, nil),
+			},
+			ScrapeClassName: probe.Spec.ScrapeClassName,
 		},
+	}
+	if probe.Spec.ProberSpec.ProxyURL != nil {
+		cp.Spec.ProxyURL = probe.Spec.ProberSpec.ProxyURL
+	}
+	if probe.Spec.SampleLimit != nil && *probe.Spec.SampleLimit <= uint64(math.MaxInt) {
+		cp.Spec.SampleLimit = int(*probe.Spec.SampleLimit)
 	}
 	if conf.EnabledPrometheusConverterOwnerReferences {
 		cp.OwnerReferences = []metav1.OwnerReference{
 			{
-				APIVersion:         v1.SchemeGroupVersion.String(),
-				Kind:               v1.ProbesKind,
+				APIVersion:         promv1.SchemeGroupVersion.String(),
+				Kind:               promv1.ProbesKind,
 				Name:               probe.Name,
 				UID:                probe.UID,
-				Controller:         pointer.BoolPtr(true),
-				BlockOwnerDeletion: pointer.BoolPtr(true),
+				Controller:         ptr.To(true),
+				BlockOwnerDeletion: ptr.To(true),
 			},
 		}
 	}
-	cp.Annotations = maybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cp.Annotations)
+	cp.Annotations = MaybeAddArgoCDIgnoreAnnotations(conf.PrometheusConverterAddArgoCDIgnoreAnnotations, cp.Annotations)
 	return cp
 }
 
-func filterUnsupportedRelabelCfg(relabelCfgs []*v1beta1vm.RelabelConfig) []*v1beta1vm.RelabelConfig {
-	newRelabelCfg := make([]*v1beta1vm.RelabelConfig, 0, len(relabelCfgs))
+func filterUnsupportedRelabelCfg(relabelCfgs []*vmv1beta1.RelabelConfig) []*vmv1beta1.RelabelConfig {
+	newRelabelCfg := make([]*vmv1beta1.RelabelConfig, 0, len(relabelCfgs))
 	for _, r := range relabelCfgs {
 		switch r.Action {
 		case "keep", "hashmod", "drop":
 			if len(r.SourceLabels) == 0 {
-				log.Info("filtering unsupported relabelConfig", "action", r.Action, "reason", "source labels are empty")
+				log.Info("filtering unsupported format of relabelConfig", "action", r.Action, "reason", "source labels are empty")
 				continue
 			}
 		}
@@ -588,17 +537,20 @@ func filterUnsupportedRelabelCfg(relabelCfgs []*v1beta1vm.RelabelConfig) []*v1be
 	return newRelabelCfg
 }
 
-// filterPrefixes filters given prefixes from src map
-func filterPrefixes(src map[string]string, filterPrefixes []string) map[string]string {
+// FilterPrefixes filters given prefixes from src map
+func FilterPrefixes(src map[string]string, filterPrefixes []string) map[string]string {
 	if len(src) == 0 || len(filterPrefixes) == 0 {
 		return src
 	}
 	dst := make(map[string]string, len(src))
 	for k, v := range src {
+		ignoreKey := false
 		for _, filterPref := range filterPrefixes {
-			if strings.HasPrefix(k, filterPref) {
-				continue
+			if ignoreKey = strings.HasPrefix(k, filterPref); ignoreKey {
+				break
 			}
+		}
+		if !ignoreKey {
 			dst[k] = v
 		}
 	}
