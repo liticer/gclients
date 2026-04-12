@@ -17,12 +17,14 @@ package labels
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"strconv"
 
+	"slices"
+
 	"github.com/cespare/xxhash/v2"
 	"github.com/prometheus/common/model"
-	"golang.org/x/exp/slices"
 )
 
 // Well-known label names used by Prometheus components.
@@ -362,7 +364,7 @@ func EmptyLabels() Labels {
 func New(ls ...Label) Labels {
 	set := make(Labels, 0, len(ls))
 	set = append(set, ls...)
-	slices.SortFunc(set, func(a, b Label) bool { return a.Name < b.Name })
+	slices.SortFunc(set, func(a, b Label) int { return cmp.Compare(a.Name, b.Name) })
 
 	return set
 }
@@ -386,7 +388,7 @@ func FromStrings(ss ...string) Labels {
 		res = append(res, Label{Name: ss[i], Value: ss[i+1]})
 	}
 
-	slices.SortFunc(res, func(a, b Label) bool { return a.Name < b.Name })
+	slices.SortFunc(res, func(a, b Label) int { return cmp.Compare(a.Name, b.Name) })
 	return res
 }
 
@@ -591,7 +593,7 @@ func (b *Builder) Labels() Labels {
 	}
 	if len(b.add) > 0 { // Base is already in order, so we only need to sort if we add to it.
 		res = append(res, b.add...)
-		slices.SortFunc(res, func(a, b Label) bool { return a.Name < b.Name })
+		slices.SortFunc(res, func(a, b Label) int { return cmp.Compare(a.Name, b.Name) })
 	}
 	return res
 }
@@ -618,7 +620,7 @@ func (b *ScratchBuilder) Add(name, value string) {
 
 // Sort the labels added so far by name.
 func (b *ScratchBuilder) Sort() {
-	slices.SortFunc(b.add, func(a, b Label) bool { return a.Name < b.Name })
+	slices.SortFunc(b.add, func(a, b Label) int { return cmp.Compare(a.Name, b.Name) })
 }
 
 // Assign is for when you already have a Labels which you want this ScratchBuilder to return.

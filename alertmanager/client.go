@@ -23,9 +23,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/api"
-
-	"github.com/prometheus/alertmanager/config"
-	"github.com/prometheus/alertmanager/types"
 )
 
 const (
@@ -39,7 +36,7 @@ const (
 
 // ServerStatus represents the status of the AlertManager endpoint.
 type ServerStatus struct {
-	Config        *config.Config    `json:"config"`
+	Config        json.RawMessage   `json:"config"`
 	VersionInfo   map[string]string `json:"versionInfo"`
 	Uptime        time.Time         `json:"uptime"`
 	ClusterStatus *ClusterStatus    `json:"cluster"`
@@ -162,7 +159,7 @@ type Alert struct {
 // ExtendedAlert represents an alert as returned by the AlertManager's list alert API.
 type ExtendedAlert struct {
 	Alert
-	Status      types.AlertStatus `json:"status"`
+	Status      AlertStatus `json:"status"`
 	Receivers   []Receiver        `json:"receivers"`
 	Fingerprint string            `json:"fingerprint"`
 }
@@ -239,13 +236,13 @@ func (h *httpAlertAPI) Push(ctx context.Context, alerts ...Alert) error {
 // SilenceAPI provides bindings for the Alertmanager's silence API.
 type SilenceAPI interface {
 	// Get returns the silence associated with the given ID.
-	Get(ctx context.Context, id string) (*types.Silence, error)
+	Get(ctx context.Context, id string) (*Silence, error)
 	// Set updates or creates the given silence and returns its ID.
-	Set(ctx context.Context, sil types.Silence) (string, error)
+	Set(ctx context.Context, sil Silence) (string, error)
 	// Expire expires the silence with the given ID.
 	Expire(ctx context.Context, id string) error
 	// List returns silences matching the given filter.
-	List(ctx context.Context, filter []string) ([]*types.Silence, error)
+	List(ctx context.Context, filter []string) ([]*Silence, error)
 }
 
 // NewSilenceAPI returns a new SilenceAPI for the client.
@@ -257,7 +254,7 @@ type httpSilenceAPI struct {
 	client api.Client
 }
 
-func (h *httpSilenceAPI) Get(ctx context.Context, id string) (*types.Silence, error) {
+func (h *httpSilenceAPI) Get(ctx context.Context, id string) (*Silence, error) {
 	u := h.client.URL(epSilence, map[string]string{
 		"id": id,
 	})
@@ -272,7 +269,7 @@ func (h *httpSilenceAPI) Get(ctx context.Context, id string) (*types.Silence, er
 		return nil, err
 	}
 
-	var sil types.Silence
+	var sil Silence
 	err = json.Unmarshal(body, &sil)
 
 	return &sil, err
@@ -292,7 +289,7 @@ func (h *httpSilenceAPI) Expire(ctx context.Context, id string) error {
 	return err
 }
 
-func (h *httpSilenceAPI) Set(ctx context.Context, sil types.Silence) (string, error) {
+func (h *httpSilenceAPI) Set(ctx context.Context, sil Silence) (string, error) {
 	u := h.client.URL(epSilences, nil)
 
 	var buf bytes.Buffer
@@ -318,7 +315,7 @@ func (h *httpSilenceAPI) Set(ctx context.Context, sil types.Silence) (string, er
 	return res.SilenceID, err
 }
 
-func (h *httpSilenceAPI) List(ctx context.Context, filter []string) ([]*types.Silence, error) {
+func (h *httpSilenceAPI) List(ctx context.Context, filter []string) ([]*Silence, error) {
 	u := h.client.URL(epSilences, nil)
 	params := url.Values{}
 	for _, f := range filter {
@@ -336,7 +333,7 @@ func (h *httpSilenceAPI) List(ctx context.Context, filter []string) ([]*types.Si
 		return nil, err
 	}
 
-	var sils []*types.Silence
+	var sils []*Silence
 	err = json.Unmarshal(body, &sils)
 
 	return sils, err
